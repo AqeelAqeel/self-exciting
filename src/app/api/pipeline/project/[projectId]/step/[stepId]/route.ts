@@ -1,7 +1,9 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextRequest, NextResponse } from 'next/server';
 import { getServerClient } from '@/lib/pipeline/supabase-client';
-import type { PipelineStepId } from '@/types/pipeline';
+import type { PipelineStepId, ContentIdeaData } from '@/types/pipeline';
+import { generateScript } from '@/lib/pipeline/agents/executor';
+import { emitStepStarted, emitStepProgress, emitStepComplete, emitStepError } from '@/lib/pipeline/events';
 
 interface RouteContext {
   params: Promise<{ projectId: string; stepId: string }>;
@@ -107,7 +109,11 @@ export async function POST(
       }
 
       case 'script_generation': {
-        // Mark as in progress
+        // Emit step started event
+        emitStepStarted(projectId, 'script_generation');
+        emitStepProgress(projectId, 'script_generation', 10, 'Preparing request...');
+
+        // Mark as in progress in database
         await supabase
           .from('scripts')
           .upsert({
@@ -119,12 +125,101 @@ export async function POST(
             onConflict: 'project_id',
           });
 
-        // TODO: Trigger actual script generation via LLM
-        // For now, return success - actual generation would be async
-        return NextResponse.json({
-          success: true,
-          message: 'Script generation started',
-        });
+        // Get content idea data for script generation
+        const { data: contentIdeaRow, error: ideaError } = await supabase
+          .from('content_ideas')
+          .select('*')
+          .eq('project_id', projectId)
+          .single();
+
+        if (ideaError || !contentIdeaRow) {
+          emitStepError(projectId, 'script_generation', 'Content idea not found. Complete step 1 first.');
+          return NextResponse.json(
+            { error: 'Content idea not found' },
+            { status: 400 }
+          );
+        }
+
+        emitStepProgress(projectId, 'script_generation', 30, 'Sending to AI model...');
+
+        // Convert to ContentIdeaData format
+        const contentIdea: ContentIdeaData = {
+          topic: contentIdeaRow.topic,
+          niche: contentIdeaRow.niche,
+          style: contentIdeaRow.style,
+          targetPlatform: contentIdeaRow.target_platform,
+          targetDuration: contentIdeaRow.target_duration,
+          tone: contentIdeaRow.tone,
+          keywords: contentIdeaRow.keywords,
+        };
+
+        try {
+          emitStepProgress(projectId, 'script_generation', 50, 'Generating script content...');
+
+          // Actually generate the script via LLM
+          const scriptData = await generateScript(contentIdea);
+
+          emitStepProgress(projectId, 'script_generation', 80, 'Parsing response...');
+
+          // Save to database
+          const { error: saveError } = await supabase
+            .from('scripts')
+            .upsert({
+              project_id: projectId,
+              title: scriptData.title,
+              hook: scriptData.hook,
+              body: scriptData.body,
+              cta: scriptData.cta,
+              full_text: scriptData.fullText,
+              estimated_duration: scriptData.estimatedDuration,
+              hashtags: scriptData.hashtags,
+              caption_text: scriptData.captionText,
+              status: 'complete',
+              progress: 100,
+              completed_at: new Date().toISOString(),
+            }, {
+              onConflict: 'project_id',
+            });
+
+          if (saveError) {
+            console.error('Failed to save script:', saveError);
+            emitStepError(projectId, 'script_generation', 'Failed to save script to database');
+            return NextResponse.json(
+              { error: 'Failed to save script' },
+              { status: 500 }
+            );
+          }
+
+          emitStepProgress(projectId, 'script_generation', 95, 'Saving to database...');
+
+          // Emit completion event with the data
+          emitStepComplete(projectId, 'script_generation', scriptData);
+
+          return NextResponse.json({
+            success: true,
+            data: scriptData,
+          });
+        } catch (genError) {
+          const errorMsg = genError instanceof Error ? genError.message : 'Script generation failed';
+          console.error('Script generation error:', genError);
+          emitStepError(projectId, 'script_generation', errorMsg);
+
+          // Update database with error status
+          await supabase
+            .from('scripts')
+            .upsert({
+              project_id: projectId,
+              status: 'error',
+              error: errorMsg,
+            }, {
+              onConflict: 'project_id',
+            });
+
+          return NextResponse.json(
+            { error: errorMsg },
+            { status: 500 }
+          );
+        }
       }
 
       case 'segments': {

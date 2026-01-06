@@ -396,6 +396,21 @@ export interface FalQueueUpdate {
 }
 
 // =============================================================================
+// PROJECT LIST ITEM (for project selector)
+// =============================================================================
+
+export interface ProjectListItem {
+  id: string;
+  name: string;
+  status: ProjectStatus;
+  currentStepId: PipelineStepId | null;
+  completedSteps: number;
+  totalSteps: number;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+// =============================================================================
 // HELPER FUNCTIONS
 // =============================================================================
 

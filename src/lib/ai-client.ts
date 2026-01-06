@@ -15,7 +15,7 @@ const openai = new OpenAI({
 
 export async function callAI(
   request: AIRequest,
-  provider: AIProvider = 'anthropic'
+  provider: AIProvider = 'openai'
 ): Promise<AIResponse> {
   if (provider === 'anthropic') {
     return callAnthropic(request);
@@ -52,8 +52,8 @@ async function callAnthropic(request: AIRequest): Promise<AIResponse> {
 
 async function callOpenAI(request: AIRequest): Promise<AIResponse> {
   const response = await openai.chat.completions.create({
-    model: request.model || 'gpt-4o',
-    max_tokens: request.maxTokens || 4096,
+    model: request.model || 'gpt-5.2-2025-12-11',
+    max_completion_tokens: request.maxTokens || 4096,
     temperature: request.temperature || 0.7,
     messages: request.messages.map((m) => ({
       role: m.role,
@@ -76,7 +76,7 @@ async function callOpenAI(request: AIRequest): Promise<AIResponse> {
 // Streaming support for real-time AI responses
 export async function* streamAI(
   request: AIRequest,
-  provider: AIProvider = 'anthropic'
+  provider: AIProvider = 'openai'
 ): AsyncGenerator<string, void, unknown> {
   if (provider === 'anthropic') {
     const systemMessage = request.messages.find((m) => m.role === 'system');
@@ -102,8 +102,8 @@ export async function* streamAI(
     }
   } else {
     const stream = await openai.chat.completions.create({
-      model: request.model || 'gpt-4o',
-      max_tokens: request.maxTokens || 4096,
+      model: request.model || 'gpt-5.2-2025-12-11',
+      max_completion_tokens: request.maxTokens || 4096,
       temperature: request.temperature || 0.7,
       stream: true,
       messages: request.messages.map((m) => ({

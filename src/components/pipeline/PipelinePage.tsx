@@ -5,6 +5,7 @@ import { usePipelineStore } from '@/store/pipeline-store';
 import { usePipelineStream } from '@/hooks/usePipelineStream';
 import { ProgressBar } from './ProgressBar';
 import { StepContent } from './StepContent';
+import { ProjectSelector } from './ProjectSelector';
 import { PIPELINE_STEPS, STEP_ID_TO_KEY, type PipelineStep } from '@/types/pipeline';
 
 export function PipelinePage() {
@@ -13,19 +14,25 @@ export function PipelinePage() {
     isLoading,
     error,
     activeStepId,
+    showProjectSelector,
+    lastProjectId,
     createProject,
+    selectProject,
     setActiveStep,
+    showSelector,
   } = usePipelineStore();
 
   // Connect to SSE when project exists
   usePipelineStream(project?.id ?? null);
 
-  // Create project on mount if none exists
+  // Auto-load last project on mount (if we have one saved and no project loaded)
   useEffect(() => {
-    if (!project && !isLoading) {
-      createProject('New Video Project').catch(console.error);
+    if (lastProjectId && !project && !isLoading && showProjectSelector) {
+      selectProject(lastProjectId).catch(() => {
+        // If loading fails, just show the selector
+      });
     }
-  }, [project, isLoading, createProject]);
+  }, [lastProjectId, project, isLoading, showProjectSelector, selectProject]);
 
   // Set default active step to first step if none selected
   useEffect(() => {
@@ -34,12 +41,23 @@ export function PipelinePage() {
     }
   }, [project, activeStepId, setActiveStep]);
 
+  // Show project selector
+  if (showProjectSelector) {
+    return (
+      <ProjectSelector
+        onSelectProject={selectProject}
+        onCreateProject={() => createProject('New Video Project')}
+        isCreating={isLoading}
+      />
+    );
+  }
+
   if (isLoading && !project) {
     return (
       <div className="min-h-screen bg-slate-950 text-white flex items-center justify-center">
         <div className="flex flex-col items-center gap-4">
           <div className="w-8 h-8 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
-          <p className="text-slate-400">Creating project...</p>
+          <p className="text-slate-400">Loading project...</p>
         </div>
       </div>
     );
@@ -54,10 +72,10 @@ export function PipelinePage() {
           </div>
           <p className="text-red-400">{error}</p>
           <button
-            onClick={() => createProject('New Video Project')}
+            onClick={showSelector}
             className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors"
           >
-            Try Again
+            Back to Projects
           </button>
         </div>
       </div>
@@ -82,9 +100,30 @@ export function PipelinePage() {
       {/* Header */}
       <header className="border-b border-slate-800 px-6 py-3 flex-shrink-0">
         <div className="max-w-7xl mx-auto flex items-center justify-between">
-          <div>
-            <h1 className="text-lg font-semibold">{project.name}</h1>
-            <p className="text-xs text-slate-500">Content Factory Pipeline</p>
+          <div className="flex items-center gap-4">
+            <button
+              onClick={showSelector}
+              className="p-2 hover:bg-slate-800 rounded-lg transition-colors group"
+              title="Back to Projects"
+            >
+              <svg
+                className="w-5 h-5 text-slate-500 group-hover:text-white transition-colors"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M15 19l-7-7 7-7"
+                />
+              </svg>
+            </button>
+            <div>
+              <h1 className="text-lg font-semibold">{project.name}</h1>
+              <p className="text-xs text-slate-500">Content Factory Pipeline</p>
+            </div>
           </div>
           <div className="flex items-center gap-4">
             <span className="text-xs text-slate-400">

@@ -1,8 +1,10 @@
 // Pipeline Store - Zustand state management for Content Factory
 
 import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
 import type {
   Project,
+  ProjectListItem,
   PipelineStep,
   PipelineStepId,
   StepStatus,
@@ -32,15 +34,26 @@ interface PipelineStore {
   isLoading: boolean;
   error: string | null;
 
+  // Project list (for selector view)
+  projectList: ProjectListItem[];
+  isLoadingList: boolean;
+
+  // Persisted state
+  lastProjectId: string | null;
+
   // UI state
   activeStepId: PipelineStepId | null;
   isPanelOpen: boolean;
+  showProjectSelector: boolean;
 
   // Project lifecycle
+  fetchProjectList: () => Promise<void>;
   createProject: (name: string) => Promise<string>;
   loadProject: (projectId: string) => Promise<void>;
+  selectProject: (projectId: string) => Promise<void>;
   resetProject: () => void;
   setProject: (project: Project) => void;
+  showSelector: () => void;
 
   // UI actions
   setActiveStep: (stepId: PipelineStepId | null) => void;
@@ -59,6 +72,7 @@ interface PipelineStore {
   generateThumbnail: () => Promise<void>;
   distribute: (platforms: DistributionPlatform[]) => Promise<void>;
   retryStep: (stepId: PipelineStepId) => Promise<void>;
+  cancelStep: (stepId: PipelineStepId) => void;
 
   // SSE update handlers (called from usePipelineStream hook)
   startStep: (stepId: PipelineStepId) => void;
@@ -84,17 +98,38 @@ function getProjectKey(stepId: PipelineStepId): keyof Project {
 // STORE IMPLEMENTATION
 // =============================================================================
 
-export const usePipelineStore = create<PipelineStore>((set, get) => ({
+export const usePipelineStore = create<PipelineStore>()(
+  persist(
+    (set, get) => ({
   // Initial state
   project: null,
   isLoading: false,
   error: null,
+  projectList: [],
+  isLoadingList: false,
+  lastProjectId: null,
   activeStepId: null,
   isPanelOpen: false,
+  showProjectSelector: true, // Start with selector visible
 
   // =============================================================================
   // PROJECT LIFECYCLE
   // =============================================================================
+
+  fetchProjectList: async (): Promise<void> => {
+    set({ isLoadingList: true });
+    try {
+      const response = await fetch('/api/pipeline/project');
+      if (!response.ok) {
+        throw new Error('Failed to fetch projects');
+      }
+      const data = await response.json();
+      set({ projectList: data.projects || [], isLoadingList: false });
+    } catch (error) {
+      console.error('Failed to fetch project list:', error);
+      set({ isLoadingList: false });
+    }
+  },
 
   createProject: async (name: string): Promise<string> => {
     set({ isLoading: true, error: null });
@@ -118,6 +153,8 @@ export const usePipelineStore = create<PipelineStore>((set, get) => ({
         isLoading: false,
         activeStepId: 'content_idea', // Start at first step
         isPanelOpen: true,
+        showProjectSelector: false, // Hide selector after creating project
+        lastProjectId: data.id, // Persist for refresh
       });
 
       return data.id;
@@ -126,6 +163,21 @@ export const usePipelineStore = create<PipelineStore>((set, get) => ({
       set({ error: message, isLoading: false });
       throw error;
     }
+  },
+
+  selectProject: async (projectId: string): Promise<void> => {
+    set({ isLoading: true, error: null });
+    try {
+      await get().loadProject(projectId);
+      set({ showProjectSelector: false });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      set({ error: message, isLoading: false });
+    }
+  },
+
+  showSelector: () => {
+    set({ showProjectSelector: true, project: null, activeStepId: null });
   },
 
   loadProject: async (projectId: string): Promise<void> => {
@@ -139,7 +191,26 @@ export const usePipelineStore = create<PipelineStore>((set, get) => ({
       }
 
       const data = await response.json();
-      set({ project: data.project, isLoading: false });
+      const project = data.project;
+
+      // Determine the active step - find first incomplete step
+      let activeStepId: PipelineStepId = 'content_idea';
+      if (project.contentIdea?.status === 'complete') activeStepId = 'script_generation';
+      if (project.scriptGeneration?.status === 'complete') activeStepId = 'segments';
+      if (project.segments?.status === 'complete') activeStepId = 'image_prompts';
+      if (project.imagePrompts?.status === 'complete') activeStepId = 'image_generation';
+      if (project.imageGeneration?.status === 'complete') activeStepId = 'video_generation';
+      if (project.videoGeneration?.status === 'complete') activeStepId = 'video_composition';
+      if (project.videoComposition?.status === 'complete') activeStepId = 'thumbnail';
+      if (project.thumbnail?.status === 'complete') activeStepId = 'distribution';
+
+      set({
+        project,
+        isLoading: false,
+        activeStepId,
+        isPanelOpen: true,
+        lastProjectId: project.id, // Persist for refresh
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       set({ error: message, isLoading: false });
@@ -388,6 +459,28 @@ export const usePipelineStore = create<PipelineStore>((set, get) => ({
     }
   },
 
+  cancelStep: (stepId: PipelineStepId) => {
+    // Reset the step back to pending state (cancel the in-progress generation)
+    get().updateStep(stepId, {
+      status: 'pending',
+      error: null,
+      progress: 0,
+      startedAt: null,
+    });
+
+    // Update project status back to draft if it was in_progress
+    set((state) => {
+      if (!state.project) return state;
+      return {
+        project: {
+          ...state.project,
+          status: 'draft',
+          updatedAt: new Date(),
+        },
+      };
+    });
+  },
+
   // =============================================================================
   // SSE HANDLERS
   // =============================================================================
@@ -488,7 +581,15 @@ export const usePipelineStore = create<PipelineStore>((set, get) => ({
       };
     });
   },
-}));
+}),
+    {
+      name: 'pipeline-storage',
+      partialize: (state) => ({
+        lastProjectId: state.lastProjectId,
+      }),
+    }
+  )
+);
 
 // =============================================================================
 // SELECTORS (for optimized component renders)
